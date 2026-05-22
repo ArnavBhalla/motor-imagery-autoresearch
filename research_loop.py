@@ -161,11 +161,13 @@ def run_experiment(src_file: str, description: str, best_rmse: float, iteration:
         log_to_tsv({"primary": 0, "raw_baseline": 0, "improvement_pct": 0,
                     "smoothness": 0, "latency_ms": 0},
                    description, "crash", h)
-        git("reset", "--hard", "HEAD~1")
+        git("reset", "--mixed", "HEAD~1")
+        git("checkout", "--", "denoiser.py")
         return best_rmse
     except Exception as e:
         print(f"  ERROR launching experiment: {e}")
-        git("reset", "--hard", "HEAD~1")
+        git("reset", "--mixed", "HEAD~1")
+        git("checkout", "--", "denoiser.py")
         return best_rmse
 
     elapsed = time.perf_counter() - t_start
@@ -180,7 +182,8 @@ def run_experiment(src_file: str, description: str, best_rmse: float, iteration:
         log_to_tsv({"primary": 0, "raw_baseline": 0, "improvement_pct": 0,
                     "smoothness": 0, "latency_ms": 0},
                    description, "crash", h)
-        git("reset", "--hard", "HEAD~1")
+        git("reset", "--mixed", "HEAD~1")
+        git("checkout", "--", "denoiser.py")
         return best_rmse
 
     primary  = results["primary"]
@@ -202,7 +205,8 @@ def run_experiment(src_file: str, description: str, best_rmse: float, iteration:
         if not all_pass:  reason.append("guardrail fail")
         status = "discard"
         print(f"  DISCARD ({', '.join(reason)})")
-        git("reset", "--hard", "HEAD~1")
+        git("reset", "--mixed", "HEAD~1")
+        git("checkout", "--", "denoiser.py")
 
     log_to_tsv(results, description, status, h)
     return best_rmse
