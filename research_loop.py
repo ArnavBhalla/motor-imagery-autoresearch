@@ -68,37 +68,6 @@ def parse_results(log_path: Path):
     except Exception:
         return None
 
-    def find(pattern):
-        m = re.search(pattern, text)
-        return m.group(1) if m else None
-
-    primary      = find(r"^primary_rmse:\s+([\d.]+)", )
-    raw_baseline = find(r"^raw_baseline:\s+([\d.]+)")
-    imprv        = find(r"^improvement_pct:\s+([-\d.]+)")
-    smooth       = find(r"^smoothness:\s+([\d.]+)")
-    latency      = find(r"^latency_ms:\s+([\d.]+)")
-    all_pass_str = find(r"^all_pass:\s+(\S+)")
-
-    if primary is None:
-        return None
-
-    return {
-        "primary":         float(primary),
-        "raw_baseline":    float(raw_baseline) if raw_baseline else None,
-        "improvement_pct": float(imprv)        if imprv        else None,
-        "smoothness":      float(smooth)        if smooth       else None,
-        "latency_ms":      float(latency)       if latency      else None,
-        "all_pass":        all_pass_str == "True",
-    }
-
-
-# run.log regex needs re.MULTILINE
-def parse_results(log_path: Path):
-    try:
-        text = log_path.read_text()
-    except Exception:
-        return None
-
     def find(key):
         m = re.search(rf"^{re.escape(key)}:\s+([^\n]+)", text, re.MULTILINE)
         return m.group(1).strip() if m else None
@@ -116,9 +85,9 @@ def parse_results(log_path: Path):
     return {
         "primary":         float(primary),
         "raw_baseline":    float(raw_baseline) if raw_baseline else None,
-        "improvement_pct": float(imprv)        if imprv        else None,
-        "smoothness":      float(smooth)        if smooth else None,
-        "latency_ms":      float(latency)       if latency else None,
+        "improvement_pct": float(imprv.rstrip("%")) if imprv else None,
+        "smoothness":      float(smooth)  if smooth  else None,
+        "latency_ms":      float(latency) if latency else None,
         "all_pass":        all_pass_str == "True",
     }
 
