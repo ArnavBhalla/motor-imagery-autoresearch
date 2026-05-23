@@ -22,6 +22,8 @@ import time
 import re
 from pathlib import Path
 
+sys.stdout.reconfigure(line_buffering=True)
+
 # ---------------------------------------------------------------------------
 # Experiment queue (in priority order)
 # ---------------------------------------------------------------------------
@@ -31,15 +33,16 @@ from pathlib import Path
 EXPERIMENTS_DIR = Path("experiments")
 
 QUEUE = [
-    ("denoiser.py",                          "baseline: DDPM eps-pred linear sde_t0=0.4 n_infer=20"),
-    ("02_x0_prediction.py",                  "x0-prediction DDPM sde_t0=0.4 n_infer=20"),
-    ("03_cosine_schedule.py",                "cosine schedule DDPM sde_t0=0.4 n_infer=20"),
-    ("04_high_sde.py",                       "high SDEdit sde_t0=0.65 n_infer=25"),
-    ("05_bigger_model.py",                   "bigger model channels=128 depth=6"),
-    ("06_flow_matching.py",                  "flow matching sde_t0=0.6 n_infer=15 Euler"),
+    # Top priority: fast version of best result (score guidance v2 at 4.93% but 204ms)
+    ("15_score_guidance_fast.py",            "score guidance fast det n_steps=12 step_size=0.45"),
+    # v2 kept for reference; v1 for stochastic comparison
+    ("13_score_guidance_v2.py",              "score guidance v2 det+avg n_steps=40 step_size=0.35"),
+    ("11_score_guidance.py",                 "score guidance n_steps=20 step_size=0.15 t_eval=40"),
+    # Best diffusion performers
     ("07_conditioned.py",                    "conditioned DDPM decoded-traj context cond_noise=0.3"),
-    ("08_high_sde_x0.py",                    "combination: x0-pred + cosine + sde_t0=0.65"),
-    ("09_temporal_attention.py",             "temporal attention DDPM conv+attn sde_t0=0.5"),
+    ("05_bigger_model.py",                   "bigger model channels=128 depth=6"),
+    # AE baseline
+    ("10_autoencoder.py",                    "autoencoder manifold projection bottleneck=32"),
 ]
 
 TIMEOUT_SECONDS = 900   # 15 min hard kill per run (matches program.md)
@@ -148,10 +151,12 @@ def run_experiment(src_file: str, description: str, best_rmse: float, iteration:
     RUN_LOG.write_text("")   # clear previous log
 
     try:
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(
             ["uv", "run", "denoiser.py"],
             stdout=open(RUN_LOG, "w"),
             stderr=subprocess.STDOUT,
+            env=env,
         )
         proc.wait(timeout=TIMEOUT_SECONDS)
         returncode = proc.returncode
