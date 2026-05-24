@@ -33,11 +33,13 @@ sys.stdout.reconfigure(line_buffering=True)
 EXPERIMENTS_DIR = Path("experiments")
 
 QUEUE = [
-    # Big model + augmentation — combines both winning ingredients
+    # Transformer — global receptive field via self-attention over 100 timesteps
+    ("28_transformer.py",              "transformer denoiser d=64 heads=4 layers=4 n_aug=4"),
+    # Big model + augmentation — combines both winning CNN ingredients
     ("27_supervised_big_aug.py",       "supervised CNN big+aug ch=128 d=6 n_aug=4"),
-    # 8x augmentation — more training diversity, same model size
+    # 8x augmentation — more training diversity
     ("26_supervised_aug8.py",          "supervised CNN aug8 n_aug=8 channels=64 depth=4"),
-    # Current best for repeated stochastic exploration
+    # Current best for stochastic exploration
     ("25_supervised_cnn_augmented.py", "supervised CNN augmented n_aug=4 channels=64 depth=4"),
 ]
 
