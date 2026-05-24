@@ -33,16 +33,10 @@ sys.stdout.reconfigure(line_buffering=True)
 EXPERIMENTS_DIR = Path("experiments")
 
 QUEUE = [
-    # Top priority: fast version of best result (score guidance v2 at 4.93% but 204ms)
-    ("15_score_guidance_fast.py",            "score guidance fast det n_steps=12 step_size=0.45"),
-    # v2 kept for reference; v1 for stochastic comparison
-    ("13_score_guidance_v2.py",              "score guidance v2 det+avg n_steps=40 step_size=0.35"),
-    ("11_score_guidance.py",                 "score guidance n_steps=20 step_size=0.15 t_eval=40"),
-    # Best diffusion performers
-    ("07_conditioned.py",                    "conditioned DDPM decoded-traj context cond_noise=0.3"),
-    ("05_bigger_model.py",                   "bigger model channels=128 depth=6"),
-    # AE baseline
-    ("10_autoencoder.py",                    "autoencoder manifold projection bottleneck=32"),
+    # Supervised CNN: trained on (imagery-decoded, clean) pairs — most principled approach
+    ("23_supervised_cnn.py", "supervised CNN noise2clean pairs channels=64 depth=4"),
+    # Score guidance: best previous unsupervised approach for comparison
+    ("11_score_guidance.py", "score guidance n_steps=20 step_size=0.15 t_eval=40"),
 ]
 
 TIMEOUT_SECONDS = 900   # 15 min hard kill per run (matches program.md)
