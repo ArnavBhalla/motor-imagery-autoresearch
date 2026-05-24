@@ -33,12 +33,12 @@ sys.stdout.reconfigure(line_buffering=True)
 EXPERIMENTS_DIR = Path("experiments")
 
 QUEUE = [
-    # Augmented supervised CNN — 4x more training pairs, better generalization
+    # Big model + augmentation — combines both winning ingredients
+    ("27_supervised_big_aug.py",       "supervised CNN big+aug ch=128 d=6 n_aug=4"),
+    # 8x augmentation — more training diversity, same model size
+    ("26_supervised_aug8.py",          "supervised CNN aug8 n_aug=8 channels=64 depth=4"),
+    # Current best for repeated stochastic exploration
     ("25_supervised_cnn_augmented.py", "supervised CNN augmented n_aug=4 channels=64 depth=4"),
-    # Bigger supervised CNN — more capacity, same approach
-    ("24_supervised_cnn_big.py",       "supervised CNN big channels=128 depth=6"),
-    # Baseline supervised CNN — repeat for stochastic init exploration
-    ("23_supervised_cnn.py",           "supervised CNN noise2clean pairs channels=64 depth=4"),
 ]
 
 TIMEOUT_SECONDS = 900   # 15 min hard kill per run (matches program.md)
