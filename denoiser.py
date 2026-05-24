@@ -1,10 +1,9 @@
 """
-Experiment 25: Supervised CNN with augmented training pairs (n_aug=4).
+Experiment 27: Supervised CNN, big model + augmentation (ch=128, d=6, n_aug=4).
 
-Instead of 1 noise realization per training trajectory, generate 4 different
-imagery noise seeds per clean trajectory → 4× more training pairs (6400 total).
-Each realization sees different noise, so the CNN learns to correct the
-decoder's systematic errors rather than memorizing specific noise patterns.
+Combines the two best ingredients: larger capacity from exp 24 with the
+augmented training pairs from exp 25. The big model may need the extra
+diversity to avoid overfitting to the 4× larger training set.
 """
 
 import time
@@ -33,7 +32,7 @@ class ResBlock(nn.Module):
 
 
 class DenoiseCNN(nn.Module):
-    def __init__(self, dim=TRAJ_DIM, channels=64, depth=4, kernel=9):
+    def __init__(self, dim=TRAJ_DIM, channels=128, depth=6, kernel=9):
         super().__init__()
         self.proj_in  = nn.Conv1d(dim, channels, 1)
         self.blocks   = nn.ModuleList([ResBlock(channels, kernel) for _ in range(depth)])
@@ -43,13 +42,12 @@ class DenoiseCNN(nn.Module):
 
     def forward(self, x):
         h = self.proj_in(x)
-        for blk in self.blocks:
-            h = blk(h)
+        for blk in self.blocks: h = blk(h)
         return x + self.proj_out(h)
 
 
 class SupervisedDenoiser:
-    def __init__(self, n_aug=4, channels=64, depth=4, lr=1e-3, batch_size=128, device=None):
+    def __init__(self, n_aug=4, channels=128, depth=6, lr=5e-4, batch_size=64, device=None):
         self.n_aug = n_aug
         self.device = device or ("mps" if torch.backends.mps.is_available() else
                                   "cuda" if torch.cuda.is_available() else "cpu")
@@ -66,8 +64,7 @@ class SupervisedDenoiser:
             for _ in range(self.n_aug):
                 seed = int(rng.randint(1_000_000))
                 neural = trajectory_to_neural(traj, snr="imagery", seed=seed)
-                decoded = decoder(neural)
-                X_list.append(decoded)
+                X_list.append(decoder(neural))
                 y_list.append(traj)
         return np.stack(X_list).astype(np.float32), np.stack(y_list).astype(np.float32)
 
@@ -75,7 +72,7 @@ class SupervisedDenoiser:
         t0 = time.perf_counter()
         decoder = load_or_train_decoder(trajectories)
         if verbose:
-            print(f"  Generating {len(trajectories)}×{self.n_aug} augmented pairs ...")
+            print(f"  Generating {len(trajectories)}×{self.n_aug} pairs ...")
         X, y = self._make_pairs(trajectories, decoder)
         self._mean = X.mean(axis=(0, 1), keepdims=True)
         self._std  = X.std(axis=(0, 1), keepdims=True) + 1e-8
@@ -90,8 +87,7 @@ class SupervisedDenoiser:
             perm = torch.randperm(N, device=self.device)
             for i in range(0, N, self.batch_size):
                 if time.perf_counter() - t0 >= time_budget: break
-                xb = Xt[perm[i:i+self.batch_size]]
-                yb = yt[perm[i:i+self.batch_size]]
+                xb, yb = Xt[perm[i:i+self.batch_size]], yt[perm[i:i+self.batch_size]]
                 loss = F.mse_loss(self.model(xb), yb)
                 self.opt.zero_grad(); loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
@@ -116,7 +112,7 @@ class SupervisedDenoiser:
 
 
 def build_denoiser() -> SupervisedDenoiser:
-    return SupervisedDenoiser(n_aug=4, channels=64, depth=4, lr=1e-3, batch_size=128)
+    return SupervisedDenoiser(n_aug=4, channels=128, depth=6)
 
 
 def _log_results(results, description, git_hash="xxxxxxx"):
@@ -131,7 +127,7 @@ def _log_results(results, description, git_hash="xxxxxxx"):
 if __name__ == "__main__":
     trajs = get_trajectories(); train_t, val_t, test_t = split_trajectories(trajs)
     decoder = load_or_train_decoder(train_t); denoiser = build_denoiser()
-    print(f"Training augmented supervised CNN for {TIME_BUDGET}s on {denoiser.device} ...")
+    print(f"Training big+aug supervised CNN for {TIME_BUDGET}s on {denoiser.device} ...")
     denoiser.train(train_t, time_budget=TIME_BUDGET)
     print("\nEvaluating on test set (imagery regime) ...")
     results = evaluate(decoder, denoiser, test_t, snr="imagery")
@@ -145,4 +141,4 @@ if __name__ == "__main__":
         import subprocess
         git_hash = subprocess.check_output(["git","rev-parse","--short","HEAD"], stderr=subprocess.DEVNULL).decode().strip()
     except Exception: git_hash = "xxxxxxx"
-    _log_results(results, "supervised CNN augmented n_aug=4 channels=64 depth=4", git_hash)
+    _log_results(results, "supervised CNN big+aug ch=128 d=6 n_aug=4", git_hash)
