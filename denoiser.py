@@ -1,16 +1,10 @@
 """
-Experiment 23: Supervised CNN denoiser trained on (imagery-decoded, clean) pairs.
+Experiment 25: Supervised CNN with augmented training pairs (n_aug=4).
 
-Fundamentally different from all DDPM/PCA/FFT approaches:
-- Training data: for each clean training trajectory, simulate imagery neural
-  signal (SNR=0.5), run through the FROZEN MLP decoder, obtain noisy decoded traj.
-  Train CNN to map (noisy_decoded → clean).
-- At test time: same pipeline. The CNN has learned exactly what errors the MLP
-  decoder makes under imagery noise, so it can correct them directly.
-
-This bypasses the not_trivial issue: learned nonlinear correction is genuinely
-different from Gaussian smoothing and should achieve much larger improvement
-(the supervision signal is exact).
+Instead of 1 noise realization per training trajectory, generate 4 different
+imagery noise seeds per clean trajectory → 4× more training pairs (6400 total).
+Each realization sees different noise, so the CNN learns to correct the
+decoder's systematic errors rather than memorizing specific noise patterns.
 """
 
 import time
@@ -47,51 +41,47 @@ class DenoiseCNN(nn.Module):
         nn.init.zeros_(self.proj_out.weight)
         nn.init.zeros_(self.proj_out.bias)
 
-    def forward(self, x):  # x: (B, dim, T)
+    def forward(self, x):
         h = self.proj_in(x)
         for blk in self.blocks:
             h = blk(h)
-        return x + self.proj_out(h)  # residual: predict correction
+        return x + self.proj_out(h)
 
 
 class SupervisedDenoiser:
-    def __init__(self, channels=64, depth=4, lr=1e-3, batch_size=128, device=None):
-        self.channels = channels
-        self.depth = depth
-        self.lr = lr
-        self.batch_size = batch_size
+    def __init__(self, n_aug=4, channels=64, depth=4, lr=1e-3, batch_size=128, device=None):
+        self.n_aug = n_aug
         self.device = device or ("mps" if torch.backends.mps.is_available() else
                                   "cuda" if torch.cuda.is_available() else "cpu")
         self.model = DenoiseCNN(channels=channels, depth=depth).to(self.device)
         self.opt = torch.optim.Adam(self.model.parameters(), lr=lr)
         self._mean = self._std = None
         self.trained = False
+        self.batch_size = batch_size
 
     def _make_pairs(self, trajectories, decoder):
         rng = np.random.RandomState(FIXED_SEED + 1)
         X_list, y_list = [], []
         for traj in trajectories:
-            seed = int(rng.randint(1_000_000))
-            neural = trajectory_to_neural(traj, snr="imagery", seed=seed)
-            decoded = decoder(neural)  # noisy decoded (T, 3)
-            X_list.append(decoded)
-            y_list.append(traj)
+            for _ in range(self.n_aug):
+                seed = int(rng.randint(1_000_000))
+                neural = trajectory_to_neural(traj, snr="imagery", seed=seed)
+                decoded = decoder(neural)
+                X_list.append(decoded)
+                y_list.append(traj)
         return np.stack(X_list).astype(np.float32), np.stack(y_list).astype(np.float32)
 
     def train(self, trajectories, time_budget=TIME_BUDGET, verbose=True):
         t0 = time.perf_counter()
         decoder = load_or_train_decoder(trajectories)
         if verbose:
-            print(f"  Generating {len(trajectories)} (decoded, clean) pairs ...")
+            print(f"  Generating {len(trajectories)}×{self.n_aug} augmented pairs ...")
         X, y = self._make_pairs(trajectories, decoder)
-
-        # Normalise inputs using decoded stats
         self._mean = X.mean(axis=(0, 1), keepdims=True)
         self._std  = X.std(axis=(0, 1), keepdims=True) + 1e-8
         X_n = (X - self._mean) / self._std
-        y_n = (y - self._mean) / self._std  # normalise targets with same stats
-
-        Xt = torch.from_numpy(X_n.transpose(0, 2, 1)).to(self.device)  # (N, dim, T)
+        y_n = (y - self._mean) / self._std
+        Xt = torch.from_numpy(X_n.transpose(0, 2, 1)).to(self.device)
         yt = torch.from_numpy(y_n.transpose(0, 2, 1)).to(self.device)
         N = len(Xt)
         self.model.train()
@@ -99,8 +89,7 @@ class SupervisedDenoiser:
         while True:
             perm = torch.randperm(N, device=self.device)
             for i in range(0, N, self.batch_size):
-                if time.perf_counter() - t0 >= time_budget:
-                    break
+                if time.perf_counter() - t0 >= time_budget: break
                 xb = Xt[perm[i:i+self.batch_size]]
                 yb = yt[perm[i:i+self.batch_size]]
                 loss = F.mse_loss(self.model(xb), yb)
@@ -108,8 +97,7 @@ class SupervisedDenoiser:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 self.opt.step(); total_loss += loss.item(); step += 1
             epoch += 1
-            if time.perf_counter() - t0 >= time_budget:
-                break
+            if time.perf_counter() - t0 >= time_budget: break
             if verbose and epoch % 50 == 0:
                 print(f"  epoch {epoch:4d} | step {step:6d} | loss {total_loss/step:.5f} | "
                       f"elapsed {time.perf_counter()-t0:.0f}s")
@@ -118,10 +106,9 @@ class SupervisedDenoiser:
             print(f"Training done: {epoch} epochs, {step} steps, {time.perf_counter()-t0:.1f}s")
 
     def __call__(self, decoded_traj):
-        if not self.trained:
-            return decoded_traj
+        if not self.trained: return decoded_traj
         x = (decoded_traj.astype(np.float32) - self._mean[0]) / self._std[0]
-        xt = torch.from_numpy(x.T).float().unsqueeze(0).to(self.device)  # (1, dim, T)
+        xt = torch.from_numpy(x.T).float().unsqueeze(0).to(self.device)
         self.model.eval()
         with torch.no_grad():
             out = self.model(xt)
@@ -129,7 +116,7 @@ class SupervisedDenoiser:
 
 
 def build_denoiser() -> SupervisedDenoiser:
-    return SupervisedDenoiser(channels=64, depth=4, lr=1e-3, batch_size=128)
+    return SupervisedDenoiser(n_aug=4, channels=64, depth=4, lr=1e-3, batch_size=128)
 
 
 def _log_results(results, description, git_hash="xxxxxxx"):
@@ -144,7 +131,7 @@ def _log_results(results, description, git_hash="xxxxxxx"):
 if __name__ == "__main__":
     trajs = get_trajectories(); train_t, val_t, test_t = split_trajectories(trajs)
     decoder = load_or_train_decoder(train_t); denoiser = build_denoiser()
-    print(f"Training supervised CNN denoiser for {TIME_BUDGET}s on {denoiser.device} ...")
+    print(f"Training augmented supervised CNN for {TIME_BUDGET}s on {denoiser.device} ...")
     denoiser.train(train_t, time_budget=TIME_BUDGET)
     print("\nEvaluating on test set (imagery regime) ...")
     results = evaluate(decoder, denoiser, test_t, snr="imagery")
@@ -158,4 +145,4 @@ if __name__ == "__main__":
         import subprocess
         git_hash = subprocess.check_output(["git","rev-parse","--short","HEAD"], stderr=subprocess.DEVNULL).decode().strip()
     except Exception: git_hash = "xxxxxxx"
-    _log_results(results, "supervised CNN noise2clean pairs channels=64 depth=4", git_hash)
+    _log_results(results, "supervised CNN augmented n_aug=4 channels=64 depth=4", git_hash)
