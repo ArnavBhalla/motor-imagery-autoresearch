@@ -33,14 +33,12 @@ sys.stdout.reconfigure(line_buffering=True)
 EXPERIMENTS_DIR = Path("experiments")
 
 QUEUE = [
-    # Transformer — global receptive field via self-attention over 100 timesteps
+    # Transformer with smoothness loss — fixes exp28 smoothness guardrail failure
+    ("29_transformer_smooth.py",       "transformer smooth lambda_s=0.5 d=64 heads=4 layers=4 n_aug=4"),
+    # Baseline transformer for stochastic init comparison
     ("28_transformer.py",              "transformer denoiser d=64 heads=4 layers=4 n_aug=4"),
-    # Big model + augmentation — combines both winning CNN ingredients
+    # Big model + augmentation — current best CNN approach
     ("27_supervised_big_aug.py",       "supervised CNN big+aug ch=128 d=6 n_aug=4"),
-    # 8x augmentation — more training diversity
-    ("26_supervised_aug8.py",          "supervised CNN aug8 n_aug=8 channels=64 depth=4"),
-    # Current best for stochastic exploration
-    ("25_supervised_cnn_augmented.py", "supervised CNN augmented n_aug=4 channels=64 depth=4"),
 ]
 
 TIMEOUT_SECONDS = 900   # 15 min hard kill per run (matches program.md)
