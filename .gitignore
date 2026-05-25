@@ -1,5 +1,11 @@
 results.tsv
+results_bciiv4.tsv
 research.log
+research_bciiv4.log
 run.log
+run_bciiv4.log
+denoiser_real.py
+bciiv4/*.zip
+bciiv4/*.mat
 __pycache__/
 .DS_Store
