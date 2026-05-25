@@ -33,11 +33,11 @@ sys.stdout.reconfigure(line_buffering=True)
 EXPERIMENTS_DIR = Path("experiments")
 
 QUEUE = [
-    # Transformer with smoothness loss — fixes exp28 smoothness guardrail failure
+    # JEPA — EMA target encoder + latent-space prediction + reconstruction head
+    ("30_jepa.py",                     "JEPA d_latent=64 ema=0.99 lambda_rec=1.0 lambda_smooth=0.3 n_aug=4"),
+    # Smooth transformer — global attention, passes smoothness guardrail
     ("29_transformer_smooth.py",       "transformer smooth lambda_s=0.5 d=64 heads=4 layers=4 n_aug=4"),
-    # Baseline transformer for stochastic init comparison
-    ("28_transformer.py",              "transformer denoiser d=64 heads=4 layers=4 n_aug=4"),
-    # Big model + augmentation — current best CNN approach
+    # Current best CNN — repeated for stochastic init exploration
     ("27_supervised_big_aug.py",       "supervised CNN big+aug ch=128 d=6 n_aug=4"),
 ]
 
