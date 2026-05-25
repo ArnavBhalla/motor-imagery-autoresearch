@@ -25,7 +25,9 @@ EXPERIMENTS_DIR = Path("experiments_real")
 
 QUEUE = [
     ("r28_supervised_small.py", "real CNN small ch=64 d=4 ECoG-HG"),
-    ("r27_supervised_big.py",   "real CNN big ch=128 d=6 ECoG-HG"),
+    ("r28_supervised_small.py",   "real CNN small ch=64 d=4 ECoG-HG"),
+    ("r27_supervised_big.py",     "real CNN big ch=128 d=6 ECoG-HG"),
+    ("r31_mamba.py",              "real Mamba SSM d=64 d_state=16 n_layers=4 ECoG-HG"),
     ("r29_transformer_smooth.py", "real transformer smooth lambda_s=0.5 d=64 h=4 l=4 ECoG-HG"),
 ]
 

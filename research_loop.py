@@ -33,12 +33,14 @@ sys.stdout.reconfigure(line_buffering=True)
 EXPERIMENTS_DIR = Path("experiments")
 
 QUEUE = [
-    # JEPA — EMA target encoder + latent-space prediction + reconstruction head
-    ("30_jepa.py",                     "JEPA d_latent=64 ema=0.99 lambda_rec=1.0 lambda_smooth=0.3 n_aug=4"),
-    # Smooth transformer — global attention, passes smoothness guardrail
-    ("29_transformer_smooth.py",       "transformer smooth lambda_s=0.5 d=64 heads=4 layers=4 n_aug=4"),
+    # Mamba SSM — selective state-space model, novel architecture
+    ("31_mamba.py",                    "Mamba SSM d=64 d_state=16 n_layers=4 n_aug=4"),
+    # Ensemble CNN — 5 random inits averaged to reduce init variance
+    ("32_ensemble_cnn.py",             "ensemble CNN K=5 ch=128 d=6 n_aug=4"),
     # Current best CNN — repeated for stochastic init exploration
     ("27_supervised_big_aug.py",       "supervised CNN big+aug ch=128 d=6 n_aug=4"),
+    # Smooth transformer — baseline comparison
+    ("29_transformer_smooth.py",       "transformer smooth lambda_s=0.5 d=64 heads=4 layers=4 n_aug=4"),
 ]
 
 TIMEOUT_SECONDS = 900   # 15 min hard kill per run (matches program.md)
