@@ -1,22 +1,14 @@
 """
-Experiment 31: Mamba-inspired selective SSM denoiser (synthetic).
+Experiment 32: Ensemble of 5 supervised CNNs (synthetic).
 
-Implements a minimal Mamba block in pure PyTorch (no CUDA kernels required).
-Key innovation over the Transformer: input-dependent state-space transitions
-(selective scan) rather than global attention. Linear O(T) complexity vs O(T²).
+The single CNN (ch=128, d=6) shows high init variance: 15–26% improvement
+depending on random seed. Averaging K=5 independent random inits at test time
+should reduce variance and consistently approach the top of the distribution.
 
-Architecture:
-  Linear embed → N × MambaBlock → Linear out (residual)
+Each model trains for TIME_BUDGET/K seconds (120s each).
+At inference: average outputs of all 5 models.
 
-MambaBlock:
-  LayerNorm → in_proj (splits x, z) → depthwise conv → SiLU →
-  input-dependent (Δ, B, C) → discretize A → sequential scan → gate with z →
-  out_proj
-
-Why this might beat the Transformer:
-  - Selective gating learns which timesteps matter for correction
-  - Recurrent formulation gives explicit temporal memory (not just attention)
-  - No quadratic attention cost (though T=100 is small, inductive bias differs)
+Novelty: first systematic test of ensembling for post-hoc BCI trajectory correction.
 """
 
 import time
@@ -29,103 +21,50 @@ from prepare import (SEQ_LEN, TRAJ_DIM, TIME_BUDGET, FIXED_SEED,
                      load_or_train_decoder, evaluate,
                      trajectory_to_neural)
 
+K_MODELS = 5   # ensemble size
 
-class MambaBlock(nn.Module):
-    """
-    Pure-PyTorch Mamba block.
-    Input: (B, T, d_model) — Output: (B, T, d_model) residual.
-    """
-    def __init__(self, d_model, d_state=16, d_conv=4, expand=2):
+
+class ResBlock(nn.Module):
+    def __init__(self, channels, kernel=9):
         super().__init__()
-        d_in = expand * d_model
-        self.d_in    = d_in
-        self.d_state = d_state
+        pad = kernel // 2
+        self.conv1 = nn.Conv1d(channels, channels, kernel, padding=pad)
+        self.conv2 = nn.Conv1d(channels, channels, kernel, padding=pad)
+        self.norm1 = nn.GroupNorm(min(8, channels), channels)
+        self.norm2 = nn.GroupNorm(min(8, channels), channels)
 
-        self.norm     = nn.LayerNorm(d_model)
-        self.in_proj  = nn.Linear(d_model, 2 * d_in, bias=False)
-        self.conv1d   = nn.Conv1d(d_in, d_in, d_conv,
-                                   padding=d_conv - 1, groups=d_in, bias=True)
-        # Projects x → (dt_raw, B_in, C_in)
-        self.x_proj   = nn.Linear(d_in, d_state * 2 + 1, bias=False)
-        self.dt_proj  = nn.Linear(1, d_in, bias=True)
-        nn.init.constant_(self.dt_proj.bias, -4.0)  # init Δ small → slow dynamics
-
-        A_init = torch.arange(1, d_state + 1, dtype=torch.float)
-        A_init = A_init.unsqueeze(0).expand(d_in, -1)
-        self.A_log = nn.Parameter(torch.log(A_init))
-        self.D     = nn.Parameter(torch.ones(d_in))
-
-        self.out_proj = nn.Linear(d_in, d_model, bias=False)
-
-    def forward(self, u):
-        # u: (B, T, d_model)
-        B, T, _ = u.shape
-        u_norm = self.norm(u)
-
-        xz = self.in_proj(u_norm)                        # (B, T, 2*d_in)
-        x, z = xz.split(self.d_in, dim=-1)
-
-        # Causal depthwise conv (local context)
-        x = self.conv1d(x.transpose(1, 2))[:, :, :T].transpose(1, 2)
-        x = F.silu(x)                                    # (B, T, d_in)
-
-        # Input-dependent SSM parameters
-        xbc = self.x_proj(x)                             # (B, T, d_state*2+1)
-        dt_raw = xbc[:, :, :1]
-        B_in   = xbc[:, :, 1:1 + self.d_state]          # (B, T, d_state)
-        C_in   = xbc[:, :, 1 + self.d_state:]            # (B, T, d_state)
-
-        dt = F.softplus(self.dt_proj(dt_raw))            # (B, T, d_in)
-        A  = -torch.exp(self.A_log.float())              # (d_in, d_state)
-
-        # Discretize: dA (B,T,d_in,d_state), dB (B,T,d_in,d_state)
-        dA = torch.exp(dt.unsqueeze(-1) * A[None, None])
-        dB = dt.unsqueeze(-1) * B_in.unsqueeze(2)
-
-        # Sequential selective scan  (T=100, fast enough without custom kernels)
-        h  = x.new_zeros(B, self.d_in, self.d_state)
-        ys = []
-        for t in range(T):
-            h  = dA[:, t] * h + dB[:, t] * x[:, t, :, None]
-            yt = (h * C_in[:, t, None, :]).sum(-1) + self.D * x[:, t]
-            ys.append(yt)
-
-        y = torch.stack(ys, dim=1)                       # (B, T, d_in)
-        y = y * F.silu(z)
-        return u + self.out_proj(y)                      # residual
+    def forward(self, x):
+        h = F.silu(self.norm1(self.conv1(x)))
+        return x + self.norm2(self.conv2(h))
 
 
-class DenoiseMamba(nn.Module):
-    def __init__(self, dim=TRAJ_DIM, seq_len=SEQ_LEN, d_model=64,
-                 n_layers=4, d_state=16, d_conv=4, expand=2):
+class DenoiseCNN(nn.Module):
+    def __init__(self, dim=TRAJ_DIM, channels=128, depth=6, kernel=9):
         super().__init__()
-        self.proj_in  = nn.Linear(dim, d_model)
-        self.pos_emb  = nn.Embedding(seq_len, d_model)
-        self.blocks   = nn.ModuleList(
-            [MambaBlock(d_model, d_state, d_conv, expand) for _ in range(n_layers)]
-        )
-        self.norm_out  = nn.LayerNorm(d_model)
-        self.proj_out  = nn.Linear(d_model, dim)
+        self.proj_in  = nn.Conv1d(dim, channels, 1)
+        self.blocks   = nn.ModuleList([ResBlock(channels, kernel) for _ in range(depth)])
+        self.proj_out = nn.Conv1d(channels, dim, 1)
         nn.init.zeros_(self.proj_out.weight)
         nn.init.zeros_(self.proj_out.bias)
-        self.register_buffer("positions", torch.arange(seq_len))
 
-    def forward(self, x):                                # (B, T, dim)
-        h = self.proj_in(x) + self.pos_emb(self.positions)
+    def forward(self, x):
+        h = self.proj_in(x)
         for blk in self.blocks:
             h = blk(h)
-        return x + self.proj_out(self.norm_out(h))
+        return x + self.proj_out(h)
 
 
-class SupervisedDenoiser:
-    def __init__(self, n_aug=4, d_model=64, n_layers=4, d_state=16,
-                 lr=1e-3, batch_size=128, device=None):
+class EnsembleDenoiser:
+    def __init__(self, n_aug=4, channels=128, depth=6, k=K_MODELS,
+                 lr=5e-4, batch_size=64, device=None):
         self.n_aug   = n_aug
+        self.k       = k
         self.device  = device or ("mps"  if torch.backends.mps.is_available() else
                                    "cuda" if torch.cuda.is_available() else "cpu")
-        self.model   = DenoiseMamba(d_model=d_model, n_layers=n_layers,
-                                     d_state=d_state).to(self.device)
-        self.opt     = torch.optim.Adam(self.model.parameters(), lr=lr)
+        # Each model gets its own random init
+        self.models  = [DenoiseCNN(channels=channels, depth=depth).to(self.device)
+                        for _ in range(k)]
+        self.opts    = [torch.optim.Adam(m.parameters(), lr=lr) for m in self.models]
         self._mean   = self._std = None
         self.trained = False
         self.batch_size = batch_size
@@ -153,51 +92,58 @@ class SupervisedDenoiser:
         X_n = (X - self._mean) / self._std
         y_n = (y - self._mean) / self._std
 
-        Xt = torch.from_numpy(X_n).to(self.device)
-        yt = torch.from_numpy(y_n).to(self.device)
+        Xt = torch.from_numpy(X_n.transpose(0, 2, 1)).to(self.device)
+        yt = torch.from_numpy(y_n.transpose(0, 2, 1)).to(self.device)
         N  = len(Xt)
-        self.model.train()
-        step = epoch = 0
-        total_loss = 0.0
 
-        while True:
-            perm = torch.randperm(N, device=self.device)
-            for i in range(0, N, self.batch_size):
-                if time.perf_counter() - t0 >= time_budget:
+        budget_each = time_budget / self.k
+        for idx, (model, opt) in enumerate(zip(self.models, self.opts)):
+            t_start = time.perf_counter()
+            model.train()
+            step = epoch = 0
+            total_loss = 0.0
+            while True:
+                perm = torch.randperm(N, device=self.device)
+                for i in range(0, N, self.batch_size):
+                    if time.perf_counter() - t_start >= budget_each:
+                        break
+                    xb = Xt[perm[i:i + self.batch_size]]
+                    yb = yt[perm[i:i + self.batch_size]]
+                    loss = F.mse_loss(model(xb), yb)
+                    opt.zero_grad(); loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    opt.step()
+                    total_loss += loss.item(); step += 1
+                epoch += 1
+                if time.perf_counter() - t_start >= budget_each:
                     break
-                xb = Xt[perm[i:i + self.batch_size]]
-                yb = yt[perm[i:i + self.batch_size]]
-                loss = F.mse_loss(self.model(xb), yb)
-                self.opt.zero_grad(); loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                self.opt.step()
-                total_loss += loss.item(); step += 1
-            epoch += 1
-            if time.perf_counter() - t0 >= time_budget:
-                break
-            if verbose and epoch % 50 == 0:
-                print(f"  epoch {epoch:4d} | step {step:6d} | "
-                      f"loss {total_loss/step:.5f} | "
-                      f"elapsed {time.perf_counter()-t0:.0f}s")
+            model.eval()
+            if verbose:
+                print(f"  Model {idx+1}/{self.k}: {epoch} epochs, "
+                      f"{step} steps, loss {total_loss/max(step,1):.5f}, "
+                      f"{time.perf_counter()-t_start:.0f}s")
 
-        self.model.eval(); self.trained = True
+        self.trained = True
         if verbose:
-            print(f"Training done: {epoch} epochs, {step} steps, "
-                  f"{time.perf_counter()-t0:.1f}s")
+            print(f"Ensemble trained in {time.perf_counter()-t0:.1f}s total")
 
     def __call__(self, decoded_traj):
         if not self.trained:
             return decoded_traj
         x  = (decoded_traj.astype(np.float32) - self._mean[0]) / self._std[0]
-        xt = torch.from_numpy(x).float().unsqueeze(0).to(self.device)
-        self.model.eval()
-        with torch.no_grad():
-            out = self.model(xt)
-        return (out.squeeze(0).cpu().numpy() * self._std[0]) + self._mean[0]
+        xt = torch.from_numpy(x.T).float().unsqueeze(0).to(self.device)
+        outputs = []
+        for model in self.models:
+            model.eval()
+            with torch.no_grad():
+                out = model(xt).squeeze(0).cpu().numpy().T
+            outputs.append(out)
+        avg = np.mean(outputs, axis=0)
+        return (avg * self._std[0]) + self._mean[0]
 
 
 def build_denoiser():
-    return SupervisedDenoiser(n_aug=4, d_model=64, n_layers=4, d_state=16)
+    return EnsembleDenoiser(n_aug=4, channels=128, depth=6, k=K_MODELS)
 
 
 def _log_results(results, description, git_hash="xxxxxxx"):
@@ -218,7 +164,7 @@ if __name__ == "__main__":
     train_t, val_t, test_t = split_trajectories(trajs)
     decoder  = load_or_train_decoder(train_t)
     denoiser = build_denoiser()
-    print(f"Training Mamba denoiser for {TIME_BUDGET}s on {denoiser.device} ...")
+    print(f"Training {K_MODELS}-model CNN ensemble for {TIME_BUDGET}s on {denoiser.device} ...")
     denoiser.train(train_t, time_budget=TIME_BUDGET)
     print("\nEvaluating ...")
     results = evaluate(decoder, denoiser, test_t, snr="imagery")
@@ -239,4 +185,4 @@ if __name__ == "__main__":
             stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
         git_hash = "xxxxxxx"
-    _log_results(results, "Mamba SSM d=64 d_state=16 n_layers=4 n_aug=4", git_hash)
+    _log_results(results, f"ensemble CNN K={K_MODELS} ch=128 d=6 n_aug=4", git_hash)
