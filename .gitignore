@@ -7,5 +7,6 @@ run_bciiv4.log
 denoiser_real.py
 bciiv4/*.zip
 bciiv4/*.mat
+grab/
 __pycache__/
 .DS_Store
